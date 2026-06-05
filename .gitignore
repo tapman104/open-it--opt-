@@ -1,0 +1,96 @@
+# Build output
+bin/
+obj/
+
+# Publish output
+publish/
+
+# NuGet
+*.nupkg
+*.snupkg
+.nuget/
+packages/
+project.lock.json
+project.fragment.lock.json
+
+# IDE / Editor
+.vs/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Rider / JetBrains
+.idea/
+*.sln.iml
+_ReSharper*/
+
+# User-specific files
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Windows
+*.pdb
+*.cache
+*.log
+thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# NativeAOT build artifacts (intermediate ILC output)
+*.ilk
+*.obj
+*.lib
+*.exp
+*.iobj
+*.ipdb
+*.pgc
+*.pgd
+
+# Crash dumps
+*.dmp
+*.mdmp
+
+# Test results
+TestResults/
+
+# NCrunch
+_NCrunch_*
+.*crunch*.local.xml
+nCrunchTemp_*
+
+# StyleCop
+StyleCopReport.xml
+
+# Files built by VS
+*_i.c
+*_p.c
+*_h.h
+*.ilk
+*.meta
+*.obj
+*.iobj
+*.pch
+*.pdb
+*.ipdb
+*.pgc
+*.pgd
+*.rsp
+*.sbr
+*.tlb
+*.tli
+*.tlh
+*.tmp
+*.tmp_proj
+*_wpftmp.csproj
+*.log
+*.vspscc
+*.vssscc
+.builds
+*.pidb
+*.svclog
+*.scc

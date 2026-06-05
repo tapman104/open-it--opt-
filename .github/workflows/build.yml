@@ -1,0 +1,220 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 'contents: write' is required so softprops/action-gh-release can push the
+# release tag on push-to-main. PR runs do not need it; the release step is
+# guarded to push-to-main anyway.
+permissions:
+  contents: write
+
+# Cancel a superseded run on the same branch/ref so we don't burn minutes on
+# a stale commit.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
+  DOTNET_ROLL_FORWARD: LatestMajor
+  PROJECT_PATH: OpenWithApp/OpenWithApp.csproj
+  PROJECT_DIR: OpenWithApp
+  CONFIGURATION: Release
+  RID: win-x64
+  TFM: net9.0-windows
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  build:
+    name: NativeAOT build (${{ env.RID }})
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 9 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Verify .NET install
+        run: |
+          $v = dotnet --version
+          Write-Host "dotnet: $v"
+          if (-not $v.StartsWith("9.")) {
+            Write-Error "Expected .NET 9.x, got $v"
+            exit 1
+          }
+
+      # ------------------------------------------------------------------
+      # NuGet package cache, keyed on packages.lock.json. Falls back to the
+      # most recent compatible cache (for the same OS) when the lock file
+      # changes or is absent.
+      # ------------------------------------------------------------------
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/packages.lock.json') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      # ------------------------------------------------------------------
+      # NativeAOT on Windows links via MSVC. windows-latest images ship with
+      # the VS 2022 Enterprise / Build Tools + Desktop C++ workload already
+      # installed, so this step is normally a fast no-op. It only fetches
+      # and runs vs_buildtools.exe when vswhere reports no install path.
+      # ------------------------------------------------------------------
+      - name: Ensure MSVC Desktop C++ workload
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path -LiteralPath $vswhere) {
+            $vc = & $vswhere -latest -products * `
+                -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+                -property installationPath 2>$null
+            if ($vc) {
+              Write-Host "MSVC C++ build tools already present at: $vc"
+              exit 0
+            }
+          }
+          Write-Host "MSVC C++ build tools not detected - installing via vs_buildtools.exe..."
+
+          $url  = 'https://aka.ms/vs/17/release/vs_buildtools.exe'
+          $boot = Join-Path $env:RUNNER_TEMP 'vs_buildtools.exe'
+          Invoke-WebRequest -Uri $url -OutFile $boot -UseBasicParsing
+
+          $args = @(
+            '--quiet','--wait','--norestart','--nocache',
+            '--add','Microsoft.VisualStudio.Workload.VCTools',
+            '--add','Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+            '--add','Microsoft.VisualStudio.Component.Windows11SDK.22621',
+            '--includeRecommended'
+          )
+          $p = Start-Process -FilePath $boot -ArgumentList $args -Wait -PassThru -NoNewWindow
+          # 0 = success, 3010 = success-but-reboot-required (fine in CI)
+          if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
+            Write-Error "vs_buildtools.exe exited with code $($p.ExitCode)"
+            exit $p.ExitCode
+          }
+          Write-Host "MSVC C++ build tools installed."
+
+      - name: Restore
+        run: dotnet restore ${{ env.PROJECT_PATH }}
+
+      - name: Build (IL smoke test)
+        run: >
+          dotnet build ${{ env.PROJECT_PATH }}
+          --configuration ${{ env.CONFIGURATION }}
+          --no-restore
+          --nologo
+
+      - name: Publish (NativeAOT)
+        run: >
+          dotnet publish ${{ env.PROJECT_PATH }}
+          --configuration ${{ env.CONFIGURATION }}
+          --runtime ${{ env.RID }}
+          --no-restore
+          -p:PublishSingleFile=false
+          --nologo
+
+      - name: Locate published EXE
+        id: locate_exe
+        run: |
+          $publishDir = Join-Path ${{ env.PROJECT_DIR }} `
+            "bin/${{ env.CONFIGURATION }}/${{ env.TFM }}/${{ env.RID }}/publish"
+          $exe = Join-Path $publishDir 'OpenWithApp.exe'
+          if (-not (Test-Path -LiteralPath $exe)) {
+            Write-Error "Expected EXE not found: $exe"
+            exit 1
+          }
+          $kb = [math]::Round((Get-Item -LiteralPath $exe).Length / 1KB, 1)
+          "PUBLISH_DIR=$publishDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "EXE_PATH=$exe"           | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "EXE_SIZE_KB=$kb"         | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "EXE: $exe"
+          Write-Host "EXE size: $kb KB"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWithApp-win-x64
+          path: ${{ env.PUBLISH_DIR }}
+          if-no-files-found: error
+          retention-days: 30
+
+      # ------------------------------------------------------------------
+      # Release: only on direct push to main, never on PRs.
+      # ------------------------------------------------------------------
+      - name: Compute release tag (short SHA)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          $short = $env:GITHUB_SHA.Substring(0, [Math]::Min(7, $env:GITHUB_SHA.Length))
+          "RELEASE_TAG=$short" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Release tag: $short"
+
+      - name: Create GitHub release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: "Build ${{ env.RELEASE_TAG }}"
+          body: |
+            Automated NativeAOT build of `OpenWithApp`.
+
+            - Commit:    ``${{ github.sha }}``
+            - Branch:    ``${{ github.ref_name }}``
+            - TFM:       ``${{ env.TFM }}``
+            - RID:       ``${{ env.RID }}``
+            - EXE size:  **${{ env.EXE_SIZE_KB }} KB**
+            - Workflow:  [run #${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          files: ${{ env.EXE_PATH }}
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ------------------------------------------------------------------
+      # Always-on summary so the run page shows size even on failure.
+      # ------------------------------------------------------------------
+      - name: Build summary
+        if: always()
+        run: |
+          $lines = New-Object System.Collections.Generic.List[string]
+          $lines.Add("## NativeAOT Build Summary")
+          $lines.Add("")
+          $status = $env:EXE_PATH -and (Test-Path -LiteralPath $env:EXE_PATH)
+          if ($status) {
+            $lines.Add("| Field        | Value |")
+            $lines.Add("|--------------|------|")
+            $lines.Add("| Project      | `OpenWithApp` |")
+            $lines.Add("| Configuration| `${{ env.CONFIGURATION }}` |")
+            $lines.Add("| Target frmwk | `${{ env.TFM }}` |")
+            $lines.Add("| Runtime ID   | `${{ env.RID }}` |")
+            $lines.Add("| EXE size     | **$env:EXE_SIZE_KB KB** |")
+            $lines.Add("| Commit       | ``$env:GITHUB_SHA`` |")
+            $lines.Add("| Trigger      | `${{ github.event_name }}` on `${{ github.ref_name }}` |")
+            if ($env:RELEASE_TAG) {
+              $lines.Add("| Release tag  | ``$env:RELEASE_TAG`` |")
+            }
+          } else {
+            $lines.Add(":x: Build did not produce an EXE.")
+          }
+          $lines | ForEach-Object { $_ } | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+          if ($status) {
+            Write-Host "::notice::Final EXE size: $env:EXE_SIZE_KB KB (${{ env.EXE_PATH }})"
+          } else {
+            Write-Host "::warning::EXE was not produced; see logs above."
+          }
