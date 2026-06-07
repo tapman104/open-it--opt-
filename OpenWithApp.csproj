@@ -42,19 +42,17 @@
     <NoWarn>$(NoWarn);IL2026;IL2057;IL2070;IL2072;IL2074;IL2075;IL2104;IL3050;IL3051;CA1416</NoWarn>
   </PropertyGroup>
 
-  <!-- The WindowsDesktop runtime pack ships WPF native deps (wpfgfx_cor3,
-       PresentationNative_cor3, PenImc_cor3, D3DCompiler_47_cor3,
-       vcruntime140_cor3) alongside the WinForms ones. We don't link any WPF
-       managed code, so these unmanaged DLLs are dead weight. Strip them so
-       the publish folder really is single-EXE. -->
+  <!-- The WindowsDesktop runtime pack ships WPF native deps alongside the
+       WinForms ones. We don't link any WPF managed code, so those unmanaged
+       DLLs are dead weight. Keep vcruntime140_cor3.dll: WinForms/CoreLib can
+       still load it at startup in the NativeAOT build. -->
   <Target Name="RemoveUnusedWpfNativeDeps" AfterTargets="ComputeFilesToPublish">
     <ItemGroup>
       <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
         Condition="$([System.String]::Copy('%(Filename)').StartsWith('wpfgfx_'))
                 or $([System.String]::Copy('%(Filename)').StartsWith('PresentationNative_'))
                 or $([System.String]::Copy('%(Filename)').StartsWith('PenImc_'))
-                or $([System.String]::Copy('%(Filename)').StartsWith('D3DCompiler_'))
-                or $([System.String]::Copy('%(Filename)').StartsWith('vcruntime140_cor3'))" />
+                or $([System.String]::Copy('%(Filename)').StartsWith('D3DCompiler_'))" />
     </ItemGroup>
   </Target>
 
